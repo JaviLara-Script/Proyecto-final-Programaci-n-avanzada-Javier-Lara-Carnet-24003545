@@ -1,0 +1,161 @@
+// =========================
+// BACKEND - Express + MongoDB
+// =========================
+
+// models/User.js
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+});
+
+module.exports = mongoose.model('User', userSchema);
+
+// models/Habit.js
+const habitSchema = new mongoose.Schema({
+  name: String,
+  goalDays: Number,
+  streak: { type: Number, default: 0 },
+  lastDoneDate: Date,
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+});
+
+module.exports = mongoose.model('Habit', habitSchema);
+
+// routes/auth.js
+const express = require('express');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const router = express.Router();
+
+const SECRET = 'tu_clave_secreta';
+
+router.post('/register', async (req, res) => {
+  const { email, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  const user = new User({ email, password: hash });
+  await user.save();
+  res.status(201).json({ message: 'Usuario registrado' });
+});
+
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+  const isValid = await bcrypt.compare(password, user.password);
+  if (!isValid) return res.status(401).json({ error: 'Contraseña incorrecta' });
+
+  const token = jwt.sign({ userId: user._id }, SECRET);
+  res.json({ token });
+});
+
+module.exports = router;
+
+// routes/habits.js
+const express = require('express');
+const Habit = require('../models/Habit');
+const router = express.Router();
+
+router.post('/:id/done', async (req, res) => {
+  const { id } = req.params;
+  const habit = await Habit.findById(id);
+  const today = new Date().toDateString();
+  const lastDone = habit.lastDoneDate?.toDateString();
+
+  if (lastDone === today) {
+    return res.status(400).json({ message: 'Ya marcaste este hábito hoy' });
+  }
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (habit.lastDoneDate?.toDateString() === yesterday.toDateString()) {
+    habit.streak += 1;
+  } else {
+    habit.streak = 1;
+  }
+
+  habit.lastDoneDate = new Date();
+  await habit.save();
+
+  res.json({ message: 'Hábito actualizado', streak: habit.streak });
+});
+
+module.exports = router;
+
+// =========================
+// FRONTEND - Next.js
+// =========================
+
+// components/HabitCard.js
+import { useState } from 'react';
+
+export default function HabitCard({ habit, onUpdate }) {
+  const [loading, setLoading] = useState(false);
+
+  const markDone = async () => {
+    setLoading(true);
+    const res = await fetch(`/api/habits/${habit._id}/done`, {
+      method: 'POST',
+    });
+    await res.json();
+    onUpdate();
+    setLoading(false);
+  };
+
+  const progress = Math.min(habit.streak / habit.goalDays, 1) * 100;
+
+  return (
+    <div className="p-4 border rounded-xl shadow-md mb-4">
+      <h3 className="text-xl font-bold">{habit.name}</h3>
+      <div className="my-2 w-full bg-gray-200 rounded-full h-3">
+        <div
+          className="bg-green-500 h-3 rounded-full transition-all"
+          style={{ width: `${progress}%` }}
+        ></div>
+      </div>
+      <p>Racha actual: {habit.streak} días</p>
+      <button
+        className="mt-2 bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
+        onClick={markDone}
+        disabled={loading}
+      >
+        {loading ? 'Actualizando...' : 'Done'}
+      </button>
+    </div>
+  );
+}
+
+// pages/api/habits/[id]/done.js (Next.js API route que conecta con Express API o directamente con MongoDB)
+
+// Esta ruta puede usarse para redirigir al backend o conectarse a la base directamente
+
+// pages/index.js (ejemplo de uso de HabitCard)
+import { useEffect, useState } from 'react';
+import HabitCard from '../components/HabitCard';
+
+export default function Home() {
+  const [habits, setHabits] = useState([]);
+
+  const fetchHabits = async () => {
+    const res = await fetch('/api/habits');
+    const data = await res.json();
+    setHabits(data);
+  };
+
+  useEffect(() => {
+    fetchHabits();
+  }, []);
+
+  return (
+    <div className="p-6 max-w-xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Tus Hábitos</h1>
+      {habits.map(habit => (
+        <HabitCard key={habit._id} habit={habit} onUpdate={fetchHabits} />
+      ))}
+    </div>
+  );
+}
